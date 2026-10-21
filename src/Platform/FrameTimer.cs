@@ -15,11 +15,14 @@ internal sealed class FrameTimer : IDisposable
     private const uint TimerAllAccess = 0x1F0003;
 
     private readonly TimerHandle? _timer;
-    private readonly AutoResetEvent _wake = new(false);
+    private readonly AutoResetEvent _wake;
+    private readonly bool _ownsWake;
     private readonly WaitHandle[]? _handles;
 
-    public FrameTimer()
+    public FrameTimer(AutoResetEvent? wake = null)
     {
+        _wake = wake ?? new(false);
+        _ownsWake = wake == null;
         var h = CreateWaitableTimerExW(IntPtr.Zero, null, HighResolution, TimerAllAccess);
         if (h.IsInvalid) h = CreateWaitableTimerExW(IntPtr.Zero, null, 0, TimerAllAccess);
         if (!h.IsInvalid)
@@ -49,7 +52,7 @@ internal sealed class FrameTimer : IDisposable
     public void Dispose()
     {
         _timer?.Dispose();
-        _wake.Dispose();
+        if (_ownsWake) _wake.Dispose();
     }
 
     private sealed class TimerHandle : WaitHandle

@@ -9,9 +9,9 @@ namespace GlowSync;
 
 public partial class App : Application
 {
-    private const string MutexName = @"Local\GlowSync.SingleInstance";
-    private const string ShowEventName = @"Local\GlowSync.ShowSettings";
-    private const string ExitEventName = @"Local\GlowSync.Exit";
+    private const string MutexName = @"Local\GlowSyncNext.SingleInstance";
+    private const string ShowEventName = @"Local\GlowSyncNext.ShowSettings";
+    private const string ExitEventName = @"Local\GlowSyncNext.Exit";
 
     private Mutex? _mutex;
     private EventWaitHandle? _showEvent;

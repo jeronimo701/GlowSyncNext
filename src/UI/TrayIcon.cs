@@ -42,8 +42,7 @@ internal sealed class TrayIcon : IDisposable
             var item = new ToolStripMenuItem($"{level}%") { Tag = level };
             item.Click += (_, _) =>
             {
-                _app.Store.Config.Brightness = level;
-                _app.Store.Config.Enabled = true;
+                _app.SetBrightness(level);
             };
             _brightness.DropDownItems.Add(item);
         }
@@ -91,18 +90,18 @@ internal sealed class TrayIcon : IDisposable
         _icon.Icon = lit && device.State == DeviceState.Connected ? _onIcon : _offIcon;
         string state = !cfg.Enabled ? "выключена"
             : _app.Engine.DisplayOff && cfg.Behavior.OffWhenDisplayOff ? "монитор выключен"
-            : $"{SkydimoImporter.ModeName(cfg.Mode)}, {cfg.Brightness}%";
+            : $"{SkydimoImporter.ModeName(_app.Engine.ActiveMode)}, {_app.Engine.ActiveBrightness}%";
         var tip = $"GlowSync — {state}\n{device.Describe()}";
         _icon.Text = tip.Length > 63 ? tip[..63] : tip;
 
-        _status.Text = device.Describe();
+        _status.Text = _app.Profiles.Status;
         _enabled.Checked = cfg.Enabled;
         _autostart.Checked = cfg.Behavior.Autostart;
-        foreach (ToolStripMenuItem item in _modes.DropDownItems) item.Checked = (EffectMode)item.Tag! == cfg.Mode;
+        foreach (ToolStripMenuItem item in _modes.DropDownItems) item.Checked = (EffectMode)item.Tag! == _app.Engine.ActiveMode;
         int nearest = 0, bestDiff = int.MaxValue;
         foreach (ToolStripMenuItem item in _brightness.DropDownItems)
         {
-            int diff = Math.Abs((int)item.Tag! - cfg.Brightness);
+            int diff = Math.Abs((int)item.Tag! - _app.Engine.ActiveBrightness);
             if (diff < bestDiff)
             {
                 bestDiff = diff;
@@ -110,12 +109,13 @@ internal sealed class TrayIcon : IDisposable
             }
         }
         foreach (ToolStripMenuItem item in _brightness.DropDownItems) item.Checked = (int)item.Tag! == nearest;
-        _brightness.Text = $"Яркость: {cfg.Brightness}%";
+        _brightness.Text = $"Яркость: {_app.Engine.ActiveBrightness}%";
     }
 
     private static Icon LoadIcon(string name)
     {
-        var info = System.Windows.Application.GetResourceStream(new Uri($"pack://application:,,,/Assets/{name}"));
+        var assembly = typeof(TrayIcon).Assembly.GetName().Name;
+        var info = System.Windows.Application.GetResourceStream(new Uri($"pack://application:,,,/{assembly};component/Assets/{name}"));
         using var stream = info!.Stream;
         return new Icon(stream, SystemInformation.SmallIconSize);
     }

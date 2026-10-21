@@ -11,8 +11,6 @@ namespace GlowSync.Platform;
 /// display on/off, sleep/resume, lock/unlock, device arrival, display mode changes, logoff and global hotkeys.
 /// </summary>
 /// <summary>Display-state signals Windows can send, in the order we trust them.</summary>
-internal enum DisplaySignal { Console, Session, MonitorPower }
-
 internal sealed class SystemEvents : IDisposable
 {
     private const int WM_POWERBROADCAST = 0x0218, PBT_APMSUSPEND = 0x4, PBT_APMRESUMESUSPEND = 0x7, PBT_APMRESUMEAUTOMATIC = 0x12, PBT_POWERSETTINGCHANGE = 0x8013;

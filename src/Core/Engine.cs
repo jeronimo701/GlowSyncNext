@@ -27,7 +27,7 @@ internal sealed class Engine : IDisposable
     private const long DisplayOffDebounceMs = 2000;
 
     private readonly ConfigStore _store;
-    private readonly DeviceManager _device;
+    private readonly DeviceHub _device;
     private readonly Thread _thread;
     private readonly FrameTimer _timer = new();
     private readonly DesktopCapture _capture = new();
@@ -47,6 +47,7 @@ internal sealed class Engine : IDisposable
     private volatile bool _suspended;
     private volatile bool _captureResetRequested;
     private volatile TestPattern _test;
+    private ProfilePreset? _profile;
     private long _testUntil;
 
     private int _layoutRevision = -1;
@@ -66,8 +67,16 @@ internal sealed class Engine : IDisposable
     private int _frames;
     private long _fpsWindowStart;
     private long _lastErrorLog;
+    public FrameMetric Rendering { get; } = new();
+    public FrameMetric Capturing { get; } = new();
+    public long CaptureFailures => Interlocked.Read(ref _captureFailures);
+    private long _captureFailures;
+    public string CaptureFormat => _capture.PixelFormat;
+    public string CaptureSize => $"{_capture.Width}×{_capture.Height}";
+    public bool HdrOutput => _capture.IsHdrOutput;
+    public string LastError { get; private set; } = "";
 
-    public Engine(ConfigStore store, DeviceManager device)
+    public Engine(ConfigStore store, DeviceHub device)
     {
         _store = store;
         _device = device;
@@ -78,6 +87,14 @@ internal sealed class Engine : IDisposable
     public event Action<bool>? ActiveChanged;
 
     public double Fps { get; private set; }
+    public double TargetFps { get; private set; }
+    public EffectMode ActiveMode => Volatile.Read(ref _profile)?.Mode ?? _store.Config.Mode;
+    public int ActiveBrightness => Volatile.Read(ref _profile)?.Brightness ?? _store.Config.Brightness;
+    public ProfilePreset? ActiveProfile => Volatile.Read(ref _profile);
+    public void SetProfile(ProfilePreset? profile)
+    {
+        if (!ReferenceEquals(Interlocked.Exchange(ref _profile, profile), profile)) Wake();
+    }
 
     public bool IsActive => _active;
 
@@ -172,6 +189,7 @@ internal sealed class Engine : IDisposable
     {
         var clock = Stopwatch.StartNew();
         double last = clock.Elapsed.TotalSeconds;
+        double next = last;
         _fpsWindowStart = Environment.TickCount64;
         while (!_stop)
         {
@@ -186,6 +204,7 @@ internal sealed class Engine : IDisposable
             }
             catch (Exception ex)
             {
+                LastError = ex.GetType().Name;
                 if (Environment.TickCount64 - _lastErrorLog > 10_000)
                 {
                     _lastErrorLog = Environment.TickCount64;
@@ -194,8 +213,9 @@ internal sealed class Engine : IDisposable
                 _capture.Reset();
             }
 
-            double remaining = interval - (clock.Elapsed.TotalSeconds - start);
-            if (remaining > 0.0005) _timer.Sleep(remaining);
+            next = Math.Max(next + interval, clock.Elapsed.TotalSeconds);
+            double remaining = next - clock.Elapsed.TotalSeconds;
+            if (remaining > 0.0005 && _timer.Sleep(remaining)) next = clock.Elapsed.TotalSeconds;
         }
         _capture.Dispose();
         _audio.Dispose();
@@ -205,6 +225,9 @@ internal sealed class Engine : IDisposable
     /// <summary>Renders one frame. Returns the desired interval until the next one.</summary>
     private double Tick(AppConfig cfg, double dt)
     {
+        long renderStart = Stopwatch.GetTimestamp();
+        var profile = Volatile.Read(ref _profile);
+        var screen = profile?.Screen ?? cfg.Screen;
         if (_captureResetRequested)
         {
             _captureResetRequested = false;
@@ -260,7 +283,7 @@ internal sealed class Engine : IDisposable
             return IdleInterval;
         }
 
-        var mode = testing ? (EffectMode)(-1) : cfg.Mode;
+        var mode = testing ? (EffectMode)(-1) : profile?.Mode ?? cfg.Mode;
         if (mode != EffectMode.Screen) _capture.Reset();
         if (mode != EffectMode.Music) _audio.Stop();
 
@@ -268,7 +291,7 @@ internal sealed class Engine : IDisposable
         var frame = _frame.AsSpan(0, n);
         switch (mode)
         {
-            case EffectMode.Screen: RenderScreen(cfg, frame); break;
+            case EffectMode.Screen: RenderScreen(cfg, screen, frame); break;
             case EffectMode.Music:
                 _audio.Maintain();
                 float level = _audio.Analyze(_bands, (float)dt, cfg.Effects.MusicSensitivity, cfg.Effects.MusicSmoothing);
@@ -277,33 +300,42 @@ internal sealed class Engine : IDisposable
             case EffectMode.Rainbow: _effects.Rainbow(frame, cfg.Effects); break;
             case EffectMode.ColorCycle: _effects.ColorCycle(frame); break;
             case EffectMode.Breathing: _effects.Breathing(frame, cfg.Effects); break;
-            case EffectMode.Static: _effects.Static(frame, cfg.Effects); break;
+            case EffectMode.Static:
+                if (profile != null) frame.Fill(ColorMath.ParseHex(profile.StaticColor, Vector3.One));
+                else _effects.Static(frame, cfg.Effects);
+                break;
             case EffectMode.Comet: _effects.Comet(frame, cfg.Effects); break;
             default: Effects.Test(frame, _test, _leds, _gridW, _gridH); break;
         }
 
-        double target = testing ? 0.6 : cfg.Brightness / 100.0;
+        double target = testing ? 0.6 : (profile?.Brightness ?? cfg.Brightness) / 100.0;
         if (!testing && cfg.Night.IsActive(DateTime.Now)) target = Math.Min(target, cfg.Night.Brightness / 100.0);
         _brightness = _brightness < 0 ? (float)target : _brightness + ((float)target - _brightness) * (1f - MathF.Exp((float)(-dt / 0.15)));
 
-        Process(cfg, mode, frame, dt);
+        Process(cfg, screen, mode, frame, dt);
         _device.Submit(_out.AsSpan(0, n * 3));
+        Rendering.Observe(FrameMetric.ElapsedMs(renderStart));
         PublishPreview(n);
         CountFrame();
-        return 1.0 / Math.Clamp(cfg.Screen.Fps, 10, 60);
+        TargetFps = _device.LimitFps(screen.Fps);
+        return 1.0 / TargetFps;
     }
 
-    private void RenderScreen(AppConfig cfg, Span<Vector3> frame)
+    private void RenderScreen(AppConfig cfg, ScreenConfig screen, Span<Vector3> frame)
     {
+        _capture.ConfigureHdr(cfg.Screen.HdrToneMapping, cfg.Screen.HdrPaperWhite, cfg.Screen.HdrPeak);
+        long captureStart = Stopwatch.GetTimestamp();
         var result = _capture.Update(cfg.Screen.Monitor);
         if (result == CaptureResult.NewFrame)
         {
-            _sampler.Ingest(_capture, cfg.Screen.RemoveBlackBars);
+            Capturing.Observe(FrameMetric.ElapsedMs(captureStart));
+            _sampler.Ingest(_capture, screen.RemoveBlackBars);
             _sampled = true;
             _captureLostSince = 0;
         }
         else if (result == CaptureResult.Unavailable)
         {
+            Interlocked.Increment(ref _captureFailures);
             if (_captureLostSince == 0) _captureLostSince = Environment.TickCount64;
             // Secure desktop (UAC, lock screen) or mode switch: hold the last colors briefly, then go dark.
             if (Environment.TickCount64 - _captureLostSince > 1500) _sampled = false;
@@ -318,14 +350,13 @@ internal sealed class Engine : IDisposable
             frame.Clear();
             return;
         }
-        _sampler.Sample(_leds, _gridW, _gridH, cfg.Screen.Depth, _capture.Rotation, frame);
+        _sampler.Sample(_leds, _gridW, _gridH, screen.Depth, _capture.Rotation, frame);
 
-        if (cfg.Screen.SpatialBlur > 0) Blur(frame, cfg.Screen.SpatialBlur / 100.0 * 4.0);
+        if (screen.SpatialBlur > 0) Blur(frame, screen.SpatialBlur / 100.0 * 4.0);
     }
 
-    private void Process(AppConfig cfg, EffectMode mode, Span<Vector3> frame, double dt)
+    private void Process(AppConfig cfg, ScreenConfig screen, EffectMode mode, Span<Vector3> frame, double dt)
     {
-        var screen = cfg.Screen;
         bool isScreen = mode == EffectMode.Screen;
         float gamma = (float)screen.Gamma;
         float saturation = 1f + screen.Saturation / 100f;
@@ -393,7 +424,6 @@ internal sealed class Engine : IDisposable
 
         var layout = cfg.Layout;
         var leds = layout.Leds;
-        if (leds.Count == 0) return;
         _leds = leds;
         _gridW = Math.Max(1, layout.GridWidth);
         _gridH = Math.Max(1, layout.GridHeight);
@@ -432,7 +462,7 @@ internal sealed class Engine : IDisposable
     {
         _stop = true;
         Wake();
-        if (_thread.IsAlive) _thread.Join(2000);
+        if (_thread.IsAlive && !_thread.Join(2000)) { Log.Warn("Engine still stopping; retaining its timer"); return; }
         _timer.Dispose();
     }
 }

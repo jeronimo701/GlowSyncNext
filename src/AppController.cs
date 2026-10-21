@@ -19,17 +19,19 @@ internal sealed class AppController : IDisposable
     };
 
     private readonly ConfigStore _store;
-    private readonly DeviceManager _device;
+    private readonly DeviceHub _device;
     private readonly Engine _engine;
     private readonly SystemEvents _events;
     private readonly TrayIcon _tray;
+    private readonly ProfileController _profiles;
     private MainWindow? _window;
     private bool _hotkeysSuspended;
     private bool _disposed;
 
     public ConfigStore Store => _store;
-    public DeviceManager Device => _device;
+    public DeviceHub Device => _device;
     public Engine Engine => _engine;
+    public ProfileController Profiles => _profiles;
     public List<HotkeyAction> HotkeyConflicts { get; private set; } = new();
 
     /// <summary>Raised on the UI thread when device status or output state changes.</summary>
@@ -57,8 +59,9 @@ internal sealed class AppController : IDisposable
             _store.SaveNow();
         }
 
-        _device = new DeviceManager(_store);
+        _device = new DeviceHub(_store);
         _engine = new Engine(_store, _device);
+        _profiles = new ProfileController(_store, _engine);
         _events = new SystemEvents();
         _tray = new TrayIcon(this);
 
@@ -92,6 +95,7 @@ internal sealed class AppController : IDisposable
         };
         _events.HotkeyPressed += OnHotkey;
         StatusChanged += () => _tray.Refresh();
+        _profiles.Changed += () => StatusChanged?.Invoke();
     }
 
     public void Start()
@@ -99,6 +103,7 @@ internal sealed class AppController : IDisposable
         ApplyHotkeys();
         _device.Start();
         _engine.Start();
+        _profiles.Start();
         _tray.Refresh();
         MemoryTrim.Schedule(15_000);
     }
@@ -136,25 +141,32 @@ internal sealed class AppController : IDisposable
 
     public void SetMode(EffectMode mode)
     {
+        _store.Config.Profiles.Selection = ProfileSelection.Custom;
         _store.Config.Mode = mode;
         _store.Config.Enabled = true;
     }
 
     public void StepMode(int direction)
     {
-        int i = Array.IndexOf(ModeOrder, _store.Config.Mode);
+        int i = Array.IndexOf(ModeOrder, _engine.ActiveMode);
         int next = ((i < 0 ? 0 : i) + direction + ModeOrder.Length) % ModeOrder.Length;
         SetMode(ModeOrder[next]);
     }
 
     public void StepBrightness(int delta)
     {
-        var cfg = _store.Config;
-        int value = cfg.Brightness;
+        int value = _engine.ActiveBrightness;
         // Finer steps at the dark end where the eye is most sensitive.
         int step = (delta > 0 ? value < 10 : value <= 10) ? Math.Sign(delta) * 2 : delta;
-        cfg.Brightness = Math.Clamp(value + step, 0, 100);
-        if (cfg.Brightness > 0) cfg.Enabled = true;
+        SetBrightness(Math.Clamp(value + step, 0, 100));
+    }
+
+    public void SetBrightness(int value)
+    {
+        value = Math.Clamp(value, 0, 100);
+        if (_engine.ActiveProfile is { } preset) preset.Brightness = value;
+        else _store.Config.Brightness = value;
+        if (value > 0) _store.Config.Enabled = true;
     }
 
     public void SuspendHotkeys(bool suspend)
@@ -195,7 +207,7 @@ internal sealed class AppController : IDisposable
             case HotkeyAction.NextMode: StepMode(1); break;
             case HotkeyAction.PrevMode: StepMode(-1); break;
         }
-        if (_store.Config.Behavior.ShowOsd) Osd.Show(action, _store.Config);
+        if (_store.Config.Behavior.ShowOsd) Osd.Show(action, _store.Config, _engine.ActiveBrightness);
     }
 
     private void OnConfigChanged(object sender, string property)
@@ -203,8 +215,13 @@ internal sealed class AppController : IDisposable
         _engine.Wake();
         if (sender is HotkeyBinding) ApplyHotkeys();
         else if (sender is BehaviorConfig && property == nameof(BehaviorConfig.Autostart)) Autostart.Set(_store.Config.Behavior.Autostart);
-        else if (sender is DeviceConfig) _device.RequestRescan();
-        if (sender is AppConfig) Ui(() => _tray.Refresh());
+        else if (sender is DeviceConfig device)
+        {
+            if (property == nameof(DeviceConfig.Protocol)) device.UdpPort = device.Protocol switch
+            { DeviceProtocol.Tpm2Net => 65506, DeviceProtocol.OpcTcp => 7890, _ => 4048 };
+            _device.RequestRescan();
+        }
+        if (sender is AppConfig or ProfilePreset) Ui(() => _tray.Refresh());
     }
 
     private void OnConfigReplaced()
@@ -228,6 +245,7 @@ internal sealed class AppController : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        _profiles.Dispose();
         _tray.Dispose();
         _events.Dispose();
         _engine.Dispose();

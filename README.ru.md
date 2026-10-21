@@ -1,4 +1,8 @@
-# GlowSync
+# GlowSync Next 0.3.3 — тестовая версия
+
+Актуальные возможности и команды сборки: [README.md](README.md). Подробная инструкция: [GUIDE.ru.md](GUIDE.ru.md), результаты проверок: [TEST-REPORT.md](TEST-REPORT.md). Ниже сохранена историческая документация оригинала; ссылки на релизы ведут на оригинальный GlowSync, не Next.
+
+# GlowSync (оригинал)
 
 [English](README.md) · **Русский**
 

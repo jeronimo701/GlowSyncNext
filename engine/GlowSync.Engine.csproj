@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <AssemblyName>GlowSync.Engine</AssemblyName>
+    <Version>0.3.3</Version>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);MVVMTK0045;CA1416</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="GlowSync.Next" />
+    <InternalsVisibleTo Include="GlowSync.Tests" />
+    <!-- Linked source keeps a single authoritative copy while separating engine/UI dependencies. -->
+    <Compile Include="..\src\Audio\*.cs;..\src\Capture\*.cs;..\src\Device\*.cs;..\src\Config\*.cs" LinkBase="Engine" />
+    <Compile Include="..\src\Core\ColorMath.cs;..\src\Core\Effects.cs;..\src\Core\Engine.cs;..\src\Core\LayoutBuilder.cs;..\src\Core\FrameMetric.cs;..\src\Core\PlaybackEvidence.cs;..\src\Core\ProfileClassifier.cs" LinkBase="Core" />
+    <Compile Include="..\src\Platform\FrameTimer.cs;..\src\Platform\MonitorPower.cs;..\src\Platform\Log.cs;..\src\Platform\DisplaySignal.cs" LinkBase="Platform" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <PackageReference Include="System.Management" Version="8.0.0" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+  </ItemGroup>
+</Project>

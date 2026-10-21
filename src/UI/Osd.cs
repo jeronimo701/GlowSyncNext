@@ -22,18 +22,19 @@ internal static class Osd
     private static Border? _barFill;
     private static DispatcherTimer? _hide;
 
-    public static void Show(HotkeyAction action, AppConfig cfg)
+    public static void Show(HotkeyAction action, AppConfig cfg, int? activeBrightness = null)
     {
         EnsureWindow();
         bool brightness = action is HotkeyAction.BrightnessUp or HotkeyAction.BrightnessDown;
+        int level = activeBrightness ?? cfg.Brightness;
         _title!.Text = action switch
         {
             HotkeyAction.Toggle => cfg.Enabled ? "Подсветка включена" : "Подсветка выключена",
-            HotkeyAction.BrightnessUp or HotkeyAction.BrightnessDown => $"Яркость {cfg.Brightness}%",
+            HotkeyAction.BrightnessUp or HotkeyAction.BrightnessDown => $"Яркость {level}%",
             _ => "Режим: " + SkydimoImporter.ModeName(cfg.Mode),
         };
         _bar!.Visibility = brightness ? Visibility.Visible : Visibility.Collapsed;
-        _barFill!.Width = 216 * Math.Clamp(cfg.Brightness, 0, 100) / 100.0;
+        _barFill!.Width = 216 * Math.Clamp(level, 0, 100) / 100.0;
 
         var area = SystemParameters.WorkArea;
         _window!.Left = area.Left + (area.Width - _window.Width) / 2;

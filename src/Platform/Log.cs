@@ -53,7 +53,8 @@ internal static class Log
 internal static class Paths
 {
     public static readonly string DataDir =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GlowSync");
+        Environment.GetEnvironmentVariable("GLOWSYNC_NEXT_DATA_DIR") ??
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GlowSyncNext");
 
     public static string ConfigFile => Path.Combine(DataDir, "config.json");
 

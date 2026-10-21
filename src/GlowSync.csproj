@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <UseWPF>true</UseWPF>
@@ -10,10 +10,10 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\glowsync.ico</ApplicationIcon>
-    <AssemblyName>GlowSync</AssemblyName>
+    <AssemblyName>GlowSync.Next</AssemblyName>
     <RootNamespace>GlowSync</RootNamespace>
-    <Version>1.0.0</Version>
-    <Product>GlowSync</Product>
+    <Version>0.3.3</Version>
+    <Product>GlowSync Next</Product>
     <Description>Подсветка монитора: синхронизация с экраном, музыка, эффекты</Description>
     <SatelliteResourceLanguages>ru</SatelliteResourceLanguages>
     <ServerGarbageCollection>false</ServerGarbageCollection>
@@ -23,15 +23,15 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="Audio\*.cs;Capture\*.cs;Device\*.cs;Config\*.cs" />
+    <Compile Remove="Core\ColorMath.cs;Core\Effects.cs;Core\Engine.cs;Core\LayoutBuilder.cs;Core\FrameMetric.cs;Core\PlaybackEvidence.cs;Core\ProfileClassifier.cs" />
+    <Compile Remove="Platform\FrameTimer.cs;Platform\MonitorPower.cs;Platform\Log.cs;Platform\DisplaySignal.cs" />
+    <ProjectReference Include="..\engine\GlowSync.Engine.csproj" />
     <Resource Include="Assets\*.ico" />
     <InternalsVisibleTo Include="GlowSync.Tests" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
-    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
-    <PackageReference Include="System.Management" Version="8.0.0" />
-    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
     <PackageReference Include="WPF-UI" Version="4.3.0" />
   </ItemGroup>
 

@@ -8,6 +8,13 @@ using GlowSync.Config;
 using GlowSync.Core;
 using GlowSync.Device;
 
+// A bare test command must never write the installed user's configuration.
+if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GLOWSYNC_NEXT_DATA_DIR")))
+    Environment.SetEnvironmentVariable("GLOWSYNC_NEXT_DATA_DIR", Path.Combine(Path.GetTempPath(), "GlowSyncNext-tests-" + Guid.NewGuid().ToString("N")));
+
+if (args.Contains("--ui-smoke")) return UiSmoke.Run();
+if (args.Contains("--media-probe")) return MediaProbe.Run();
+
 int failures = 0;
 void Check(string name, bool ok, string detail = "")
 {
@@ -148,7 +155,8 @@ var night = new NightConfig { Enabled = true, From = "23:00", To = "07:00" };
 Check("night window", night.IsActive(new DateTime(2026, 1, 1, 23, 30, 0)) && night.IsActive(new DateTime(2026, 1, 1, 6, 59, 0)) && !night.IsActive(new DateTime(2026, 1, 1, 12, 0, 0)));
 
 // 9. Real desktop capture through the whole GPU path (duplication, mips, staging map) and sampling.
-using (var capture = new DesktopCapture())
+if (args.Contains("--no-desktop")) Skip("desktop capture", "explicit headless test mode");
+else using (var capture = new DesktopCapture())
 {
     var sw = System.Diagnostics.Stopwatch.StartNew();
     CaptureResult last = CaptureResult.Unavailable;
@@ -180,6 +188,16 @@ using (var capture = new DesktopCapture())
     }
 }
 
+// Real format negotiation with optional HDR enabled; SDR must remain capturable.
+if (!args.Contains("--no-desktop"))
+{
+    using var hdrCapture = new DesktopCapture();
+    hdrCapture.ConfigureHdr(true, 203, 1000);
+    var hdrWatch = System.Diagnostics.Stopwatch.StartNew();
+    while (!hdrCapture.HasFrame && hdrWatch.ElapsedMilliseconds < 2500) { hdrCapture.Update(""); System.Threading.Thread.Sleep(20); }
+    Check("optional HDR format negotiation captures desktop", hdrCapture.HasFrame && hdrCapture.PixelFormat is "B8G8R8A8_UNorm" or "R16G16B16A16_Float", $"HDR output={hdrCapture.IsHdrOutput}; actual format={hdrCapture.PixelFormat}");
+}
+
 // 10. Monitor power tracker: a display that never answers DDC/CI must never blank the strip,
 //     a single dropped reply must not either, and a real "off" must be caught.
 {
@@ -205,6 +223,102 @@ using (var capture = new DesktopCapture())
         $"on={on} stillOn={stillOn} offAfterSilence={offAfterSilence} backOn={backOn} offReported={offReported} standby={standbyIsOff}");
 }
 
+// Next regressions: a hand-edited side count must rebuild the old persisted coordinate list.
+{
+    var stale = new LayoutConfig { Left = 20, Top = 41, Right = 20, Bottom = 0 };
+    stale.Leds = LayoutBuilder.Build(17, 31, 17, 0, StartCorner.BottomLeft, true, 0).Leds;
+    stale.Normalize();
+    Check("Next: stale 65 map repaired to 81", stale.Leds.Count == 81 && stale.GridWidth == 41 && stale.GridHeight == 20);
+    using var store = new ConfigStore();
+    store.Config.Layout.Left = 20; store.Config.Layout.Top = 41; store.Config.Layout.Right = 20;
+    Check("Next: layout rebuilt with no window", store.Config.Layout.Leds.Count == 81);
+    int revision = store.Revision;
+    var rule = new ProfileRule { Process = "game.exe" };
+    store.Config.Profiles.Rules.Add(rule);
+    rule.Process = "other.exe";
+    Check("Next: new rules tracked", store.Revision >= revision + 2);
+    store.Config.Profiles.Rules.Remove(rule);
+    revision = store.Revision;
+    rule.Process = "detached.exe";
+    Check("Next: deleted rules detached", store.Revision == revision);
+    store.Config.Profiles.Game.Screen.SmoothingMs = 37;
+    var nextClone = ConfigStore.Clone(store.Config);
+    nextClone.Normalize();
+    Check("Next: profile persistence round trip", nextClone.Profiles.Game.Screen.SmoothingMs == 37 && nextClone.Layout.Leds.Count == 81);
+}
+{
+    var p = new ProfilesConfig();
+    void Classify(string name, string process, string title, ProfileKind expected, string path = "", string? url = null) =>
+        Check("Next: " + name, ProfileClassifier.Classify(new(process, title, path, url), p).Profile == expected);
+    Classify("ordinary browser", "chrome", "Search", ProfileKind.Desktop);
+    Classify("YouTube URL no implicit match", "msedge", "Video", ProfileKind.Desktop, url: "https://www.youtube.com/watch?v=123");
+    Classify("YouTube title no implicit match", "chrome", "Clip - YouTube - Google Chrome", ProfileKind.Desktop);
+    Classify("Firefox no implicit match", "firefox", "Clip - YouTube — Mozilla Firefox", ProfileKind.Desktop);
+    Classify("Music URL no implicit match", "chrome", "Song - YouTube Music - Google Chrome", ProfileKind.Desktop, url: "https://music.youtube.com/watch?v=123");
+    Classify("short URL no implicit match", "brave", "Video", ProfileKind.Desktop, url: "youtu.be/123");
+    Classify("fake YouTube domain", "chrome", "Example", ProfileKind.Desktop, url: "https://youtube.com.evil.example/watch");
+    Classify("YouTube text on ordinary page", "chrome", "How to use YouTube - Search - Google Chrome", ProfileKind.Desktop);
+    Classify("player no implicit match", "mpc-hc64.exe", "Movie", ProfileKind.Desktop);
+    Classify("music player no implicit match", "foobar2000", "Track", ProfileKind.Desktop);
+    Classify("Steam path no implicit match", "mygame", "Game", ProfileKind.Desktop, @"D:\SteamLibrary\steamapps\common\MyGame\game.exe");
+    Classify("Epic path no implicit match", "mygame", "Game", ProfileKind.Desktop, @"D:\Epic Games\MyGame\game.exe");
+    Classify("unknown app", "notepad", "Document", ProfileKind.Desktop);
+    p.Rules.Add(new() { Process = "customgame.exe", Profile = ProfileKind.Game });
+    Classify("custom game rule", "customgame", "Game", ProfileKind.Game);
+    p.Rules.Insert(0, new() { Process = "chrome.exe", TitleContains = "YouTube", Profile = ProfileKind.Desktop });
+    Classify("rule overrides builtin", "chrome", "Clip - YouTube", ProfileKind.Desktop, url: "https://youtube.com");
+    p.Rules[0].Enabled = false;
+    Classify("disabled rule has no hidden fallback", "chrome", "Clip - YouTube", ProfileKind.Desktop);
+    p.DetectBrowserVideo = false;
+    Classify("browser detection disabled", "chrome", "Clip - YouTube", ProfileKind.Desktop);
+    p.DetectGamesByPath = false;
+    Classify("game detection disabled", "mygame", "Game", ProfileKind.Desktop, @"D:\SteamLibrary\steamapps\common\Game\game.exe");
+    var debounce = new ProfileDebouncer();
+    Check("Next: debounce holds initial profile", !debounce.Update(ProfileKind.Game, 0, 800));
+    Check("Next: debounce accepts stable profile", debounce.Update(ProfileKind.Game, 800, 800) && debounce.Current == ProfileKind.Game);
+    debounce.Update(ProfileKind.Video, 900, 800);
+    Check("Next: short Alt+Tab ignored", !debounce.Update(ProfileKind.Game, 1000, 800) && debounce.Current == ProfileKind.Game);
+    debounce.Update(ProfileKind.Video, 2000, 800);
+    Check("Next: stable player takes over", debounce.Update(ProfileKind.Video, 2800, 800) && debounce.Current == ProfileKind.Video);
+}
+{
+    byte[] packet = Array.Empty<byte>();
+    int size = FrameEncoding.Build(DeviceProtocol.Skydimo, ChannelOrder.RGB, 81, new byte[] { 10, 20, 30 }, ref packet);
+    Check("Next: SKA127 frame header", size == 249 && packet.AsSpan(0, 6).SequenceEqual(new byte[] { 65, 100, 97, 0, 0, 81 }));
+    Check("Next: missing LEDs padded black", packet.AsSpan(9, size - 9).ToArray().All(x => x == 0));
+    size = FrameEncoding.Build(DeviceProtocol.Adalight, ChannelOrder.RGB, 300, new byte[] { 1, 2, 3 }, ref packet);
+    Check("Next: Adalight big-endian count/checksum", size == 906 && packet[3] == 1 && packet[4] == 43 && packet[5] == (1 ^ 43 ^ 0x55));
+    foreach (var order in Enum.GetValues<ChannelOrder>())
+    {
+        size = FrameEncoding.Build(DeviceProtocol.Adalight, order, 1, new byte[] { 10, 20, 30, 99, 99, 99 }, ref packet);
+        var expected = order.ToString().Select(c => (byte)(c == 'R' ? 10 : c == 'G' ? 20 : 30)).ToArray();
+        Check("Next: channel order " + order, size == 9 && packet.AsSpan(6, 3).SequenceEqual(expected));
+    }
+    double limit = FrameEncoding.LimitFps(60, DeviceProtocol.Skydimo, 115200, 81);
+    Check("Next: UART frame rate budget", limit > 41 && limit < 42);
+    Check("Next: DDP has no UART limit", FrameEncoding.LimitFps(60, DeviceProtocol.WledDdp, 115200, 1000) == 60);
+    // Exercise the actual UDP transport against a local receiver, including fragmentation and PUSH.
+    using var listener = new System.Net.Sockets.UdpClient(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0));
+    listener.Client.ReceiveTimeout = 1000;
+    int port = ((System.Net.IPEndPoint)listener.Client.LocalEndPoint!).Port;
+    using var transport = new DdpFrameTransport("127.0.0.1", port);
+    var rgb = Enumerable.Range(0, 3000).Select(i => (byte)(i % 251)).ToArray();
+    transport.Write(rgb);
+    var rebuilt = new byte[3000];
+    bool headers = true;
+    for (int chunk = 0; chunk < 3; chunk++)
+    {
+        var remote = new System.Net.IPEndPoint(System.Net.IPAddress.Any, 0);
+        var received = listener.Receive(ref remote);
+        int offsetBytes = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(received.AsSpan(4));
+        int count = System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(received.AsSpan(8));
+        headers &= received[0] == (chunk == 2 ? 0x41 : 0x40) && received[1] == 1 && received[2] == 0x0b && received[3] == 1 && count + 10 == received.Length && offsetBytes == chunk * 1440;
+        received.AsSpan(10).CopyTo(rebuilt.AsSpan(offsetBytes));
+    }
+    Check("Next: DDP network fragmentation and push", headers && rebuilt.SequenceEqual(rgb));
+}
+
+ExtendedTests.Run((name, ok, detail) => Check(name, ok, detail));
 Console.WriteLine(failures == 0 ? "ALL PASSED" : $"{failures} FAILED");
 return failures;
 

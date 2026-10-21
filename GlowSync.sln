@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GlowSync", "src\GlowSync.cs
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GlowSync.Tests", "tests\GlowSync.Tests.csproj", "{E8AB6F43-0496-4D81-8FEC-7053A2B78865}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GlowSync.Engine", "engine\GlowSync.Engine.csproj", "{1F4EC8DD-8B5C-4E48-B244-BC20451E7D3A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -16,6 +18,10 @@ Global
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{1F4EC8DD-8B5C-4E48-B244-BC20451E7D3A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1F4EC8DD-8B5C-4E48-B244-BC20451E7D3A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1F4EC8DD-8B5C-4E48-B244-BC20451E7D3A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1F4EC8DD-8B5C-4E48-B244-BC20451E7D3A}.Release|Any CPU.Build.0 = Release|Any CPU
 		{14A679C4-5441-47EE-9B80-0D9982C5196E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{14A679C4-5441-47EE-9B80-0D9982C5196E}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{14A679C4-5441-47EE-9B80-0D9982C5196E}.Release|Any CPU.ActiveCfg = Release|Any CPU

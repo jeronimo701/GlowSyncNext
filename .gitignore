@@ -2,3 +2,16 @@ bin/
 obj/
 *.user
 .vs/
+artifacts/
+.pio/
+.venv-pio/
+.codex/
+.env
+.env.*
+!.env.example
+secrets.json
+*.pfx
+*.p12
+*.jks
+*.keystore
+*.log

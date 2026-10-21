@@ -4,7 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
     xmlns:local="clr-namespace:GlowSync.UI"
-    Title="GlowSync"
+    Title="GlowSync Next"
     Width="1100"
     Height="800"
     MinWidth="900"
@@ -67,7 +67,7 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <ui:TitleBar Grid.Row="0" Title="GlowSync — подсветка монитора" />
+        <ui:TitleBar Grid.Row="0" Title="GlowSync Next — подсветка монитора" />
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
@@ -85,6 +85,12 @@
                         <StackPanel Orientation="Horizontal" Margin="4,6">
                             <ui:SymbolIcon Symbol="Home24" FontSize="18" />
                             <TextBlock Text="Главная" Margin="12,0,0,0" FontSize="14" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </ListBoxItem>
+                    <ListBoxItem Tag="PageProfiles">
+                        <StackPanel Orientation="Horizontal" Margin="4,6">
+                            <ui:SymbolIcon Symbol="ArrowSync24" FontSize="18" />
+                            <TextBlock Text="Профили и автоматика" Margin="12,0,0,0" FontSize="14" VerticalAlignment="Center" />
                         </StackPanel>
                     </ListBoxItem>
                     <ListBoxItem Tag="PageScreen">
@@ -109,6 +115,18 @@
                         <StackPanel Orientation="Horizontal" Margin="4,6">
                             <ui:SymbolIcon Symbol="PlugConnected24" FontSize="18" />
                             <TextBlock Text="Лента и устройство" Margin="12,0,0,0" FontSize="14" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </ListBoxItem>
+                    <ListBoxItem Tag="PageOutputs">
+                        <StackPanel Orientation="Horizontal" Margin="4,6">
+                            <ui:SymbolIcon Symbol="PlugConnected24" FontSize="18" />
+                            <TextBlock Text="Доп. контроллеры" Margin="12,0,0,0" FontSize="14" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </ListBoxItem>
+                    <ListBoxItem Tag="PageDiagnostics">
+                        <StackPanel Orientation="Horizontal" Margin="4,6">
+                            <ui:SymbolIcon Symbol="Info24" FontSize="18" />
+                            <TextBlock Text="Диагностика" Margin="12,0,0,0" FontSize="14" VerticalAlignment="Center" />
                         </StackPanel>
                     </ListBoxItem>
                     <ListBoxItem Tag="PageSettings">
@@ -141,6 +159,16 @@
                                     Message="Оригинальная программа Skydimo держит COM-порт ленты. Закройте её, чтобы GlowSync мог управлять подсветкой." />
                         <ui:Button x:Name="SkydimoBarButton" Content="Закрыть Skydimo и убрать его из автозапуска" Icon="{ui:SymbolIcon Dismiss24}" Margin="0,0,0,12" Click="RetireSkydimo_Click" Visibility="Collapsed" />
 
+                        <ui:CardControl>
+                            <ui:CardControl.Header>
+                                <StackPanel>
+                                    <TextBlock Text="Профиль" Style="{StaticResource RowTitle}" />
+                                    <TextBlock x:Name="ProfileStatusText" Style="{StaticResource RowHint}" />
+                                </StackPanel>
+                            </ui:CardControl.Header>
+                            <ComboBox x:Name="ProfileSelectionBox" MinWidth="200" DisplayMemberPath="Name" SelectedValuePath="Value" SelectedValue="{Binding Profiles.Selection}" />
+                        </ui:CardControl>
+                        <TextBlock Text="Профили настраиваются в «Профили и автоматика». Ручной выбор режима ниже отключает автоматическое переключение." Style="{StaticResource RowHint}" Margin="0,0,0,8" />
                         <Border CornerRadius="10" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" Height="300" Margin="0,0,0,10">
                             <Grid>
                                 <local:LedPreview x:Name="Preview" />
@@ -156,13 +184,13 @@
                                 </StackPanel>
                             </ui:CardControl.Header>
                             <StackPanel Orientation="Horizontal">
-                                <Slider Minimum="0" Maximum="100" TickFrequency="1" Width="320" Value="{Binding Brightness}" />
-                                <TextBlock Style="{StaticResource Value}" Text="{Binding Brightness, StringFormat={}{0}%}" />
+                                <Slider x:Name="MainBrightnessSlider" Minimum="0" Maximum="100" TickFrequency="1" Width="320" />
+                                <TextBlock x:Name="MainBrightnessValue" Style="{StaticResource Value}" />
                             </StackPanel>
                         </ui:CardControl>
 
                         <TextBlock Text="Режим" Style="{StaticResource Section}" />
-                        <ListBox x:Name="ModeList" SelectedValuePath="Mode" SelectedValue="{Binding Mode}" Background="Transparent" BorderThickness="0"
+                        <ListBox x:Name="ModeList" PreviewMouseLeftButtonUp="ManualMode_Click" SelectedValuePath="Mode" SelectedValue="{Binding Mode}" Background="Transparent" BorderThickness="0"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                             <ListBox.ItemsPanel>
                                 <ItemsPanelTemplate>
@@ -184,10 +212,26 @@
                     </StackPanel>
                 </ScrollViewer>
 
+                <ScrollViewer x:Name="PageProfiles" Style="{StaticResource PageScroll}">
+                    <StackPanel MaxWidth="980">
+                        <TextBlock Text="Профили и автоматика" Style="{StaticResource PageTitle}" />
+                        <TextBlock x:Name="AutoProfileStatusText" Style="{StaticResource RowHint}" Margin="0,0,0,10" />
+                        <StackPanel x:Name="ProfileSettingsPanel" />
+                    </StackPanel>
+                </ScrollViewer>
+
+                <ScrollViewer x:Name="PageOutputs" Style="{StaticResource PageScroll}">
+                    <StackPanel><TextBlock Text="Дополнительные контроллеры" Style="{StaticResource PageTitle}" /><StackPanel x:Name="OutputsPanel" /></StackPanel>
+                </ScrollViewer>
+                <ScrollViewer x:Name="PageDiagnostics" Style="{StaticResource PageScroll}">
+                    <StackPanel><TextBlock Text="Диагностика" Style="{StaticResource PageTitle}" /><StackPanel x:Name="DiagnosticsPanel" /></StackPanel>
+                </ScrollViewer>
+
                 <!--  ===== SCREEN =====  -->
                 <ScrollViewer x:Name="PageScreen" Style="{StaticResource PageScroll}">
                     <StackPanel MaxWidth="980">
                         <TextBlock Text="Синхронизация с экраном" Style="{StaticResource PageTitle}" />
+                        <TextBlock x:Name="ScreenScopeHint" TextWrapping="Wrap" Margin="0,0,0,12" />
 
                         <ui:CardControl Icon="{ui:SymbolIcon Desktop24}">
                             <ui:CardControl.Header>
@@ -199,15 +243,16 @@
                             <ComboBox x:Name="MonitorBox" MinWidth="320" DisplayMemberPath="Label" SelectedValuePath="DeviceName" SelectedValue="{Binding Screen.Monitor}" />
                         </ui:CardControl>
 
+                        <StackPanel x:Name="ScreenTuningPanel">
                         <ui:CardControl Icon="{ui:SymbolIcon TopSpeed24}">
                             <ui:CardControl.Header>
                                 <StackPanel>
                                     <TextBlock Text="Частота обновления" Style="{StaticResource RowTitle}" />
-                                    <TextBlock Text="Skydimo работал на 30 кадрах/с. Больше — плавнее, нагрузка всё равно мизерная (уменьшение кадра делает видеокарта)" Style="{StaticResource RowHint}" />
+                                    <TextBlock Text="До 60 FPS, но реальная отправка ограничена скоростью контроллера. Для 81 LED при 115200 бод — около 42 FPS с запасом." Style="{StaticResource RowHint}" />
                                 </StackPanel>
                             </ui:CardControl.Header>
                             <StackPanel Orientation="Horizontal">
-                                <Slider Minimum="10" Maximum="60" TickFrequency="1" Value="{Binding Screen.Fps}" />
+                                <Slider x:Name="ScreenFpsSlider" Minimum="10" Maximum="60" TickFrequency="1" Value="{Binding Screen.Fps}" />
                                 <TextBlock Style="{StaticResource Value}" Text="{Binding Screen.Fps, StringFormat={}{0} к/с}" />
                             </StackPanel>
                         </ui:CardControl>
@@ -299,6 +344,7 @@
                             </ui:CardControl.Header>
                             <ui:ToggleSwitch IsChecked="{Binding Screen.RemoveBlackBars}" />
                         </ui:CardControl>
+                        </StackPanel>
                     </StackPanel>
                 </ScrollViewer>
 
@@ -306,6 +352,7 @@
                 <ScrollViewer x:Name="PageEffects" Style="{StaticResource PageScroll}">
                     <StackPanel MaxWidth="980">
                         <TextBlock Text="Эффекты и музыка" Style="{StaticResource PageTitle}" />
+                        <TextBlock Text="Постоянный цвет относится к активному профилю (или ручному режиму). Стиль музыки и параметры анимаций общие; они заметны только при соответствующем режиме. Ночной режим дополнительно ограничивает яркость." TextWrapping="Wrap" Margin="0,0,0,12" Opacity="0.7" />
 
                         <TextBlock Text="Музыка" Style="{StaticResource Section}" Margin="2,0,0,8" />
                         <ui:CardControl Icon="{ui:SymbolIcon MusicNote224}">
@@ -350,7 +397,7 @@
                             <ui:CardControl.Header>
                                 <TextBlock Text="Цвет подсветки" Style="{StaticResource RowTitle}" />
                             </ui:CardControl.Header>
-                            <local:ColorPicker Hex="{Binding Effects.StaticColor}" Width="560" />
+                            <local:ColorPicker x:Name="StaticColorPicker" Hex="{Binding Effects.StaticColor}" Width="560" />
                         </ui:CardControl>
 
                         <TextBlock Text="Радуга" Style="{StaticResource Section}" />
@@ -401,7 +448,8 @@
                             <ui:CardControl.Header>
                                 <StackPanel>
                                     <TextBlock Text="Цвет" Style="{StaticResource RowTitle}" />
-                                    <ui:ToggleSwitch IsChecked="{Binding Effects.BreathingRainbow}" OnContent="Меняется каждый вдох" OffContent="Свой цвет" Margin="0,8,0,0" />
+                                    <CheckBox x:Name="BreathingChangeColorBox" Content="Менять цвет при каждом вдохе" IsChecked="{Binding Effects.BreathingRainbow, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="0,8,0,0" />
+                                    <TextBlock Text="Без галочки используется выбранный справа цвет" Style="{StaticResource RowHint}" />
                                 </StackPanel>
                             </ui:CardControl.Header>
                             <local:ColorPicker Hex="{Binding Effects.BreathingColor}" Width="560" />
@@ -538,13 +586,22 @@
                             <StackPanel Orientation="Horizontal">
                                 <ComboBox x:Name="ProtocolBox" MinWidth="160" DisplayMemberPath="Name" SelectedValuePath="Value" SelectedValue="{Binding Device.Protocol}" />
                                 <TextBlock Text="LED:" VerticalAlignment="Center" Margin="14,0,6,0" />
-                                <ui:NumberBox Width="130" Minimum="1" Maximum="1000" MaxDecimalPlaces="0" SmallChange="1" Value="{Binding Device.LedCount}" ToolTip="Число светодиодов для Adalight (Skydimo сообщает сам)" />
+                                <ui:NumberBox Width="130" Minimum="1" Maximum="1000" MaxDecimalPlaces="0" SmallChange="1" Value="{Binding Device.LedCount, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ToolTip="Число светодиодов для Adalight (Skydimo сообщает сам)" />
                                 <TextBlock Text="Скорость:" VerticalAlignment="Center" Margin="14,0,6,0" />
                                 <ComboBox x:Name="BaudBox" MinWidth="110" SelectedValue="{Binding Device.BaudRate}" />
                             </StackPanel>
                         </ui:CardControl>
 
                         <TextBlock Text="Раскладка светодиодов" Style="{StaticResource Section}" />
+                        <ui:CardControl>
+                            <ui:CardControl.Header><TextBlock Text="IP / порт / RGB / OPC-канал. DDP: 4048; TPM2: 65506; OPC: 7890" Style="{StaticResource RowTitle}" /></ui:CardControl.Header>
+                            <StackPanel Orientation="Horizontal">
+                                <ui:TextBox Width="145" Text="{Binding Device.Host, UpdateSourceTrigger=LostFocus}" ToolTip="IP-адрес WLED" />
+                                <ui:NumberBox Width="100" Margin="6,0,0,0" Minimum="1" Maximum="65535" MaxDecimalPlaces="0" Value="{Binding Device.UdpPort, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                <ComboBox x:Name="ChannelOrderBox" MinWidth="85" Margin="6,0,0,0" SelectedItem="{Binding Device.ChannelOrder}" />
+                                <ui:NumberBox Width="75" Margin="6,0,0,0" Minimum="0" Maximum="255" MaxDecimalPlaces="0" Value="{Binding Device.OpcChannel, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            </StackPanel>
+                        </ui:CardControl>
                         <ui:InfoBar x:Name="LedMismatchBar" Severity="Warning" IsClosable="False" Title="Число светодиодов не совпадает" Margin="0,0,0,8" />
                         <ui:CardControl Icon="{ui:SymbolIcon Grid24}">
                             <ui:CardControl.Header>
@@ -556,19 +613,19 @@
                             <UniformGrid Columns="4" Width="560">
                                 <StackPanel Margin="0,0,8,0">
                                     <TextBlock Text="Слева" Style="{StaticResource RowHint}" />
-                                    <ui:NumberBox Minimum="0" Maximum="300" MaxDecimalPlaces="0" SmallChange="1" Value="{Binding Layout.Left}" />
+                                    <ui:NumberBox x:Name="LayoutLeftBox" Minimum="0" Maximum="300" MaxDecimalPlaces="0" SmallChange="1" Value="{Binding Layout.Left, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                 </StackPanel>
                                 <StackPanel Margin="0,0,8,0">
                                     <TextBlock Text="Сверху" Style="{StaticResource RowHint}" />
-                                    <ui:NumberBox Minimum="0" Maximum="300" MaxDecimalPlaces="0" SmallChange="1" Value="{Binding Layout.Top}" />
+                                    <ui:NumberBox x:Name="LayoutTopBox" Minimum="0" Maximum="300" MaxDecimalPlaces="0" SmallChange="1" Value="{Binding Layout.Top, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                 </StackPanel>
                                 <StackPanel Margin="0,0,8,0">
                                     <TextBlock Text="Справа" Style="{StaticResource RowHint}" />
-                                    <ui:NumberBox Minimum="0" Maximum="300" MaxDecimalPlaces="0" SmallChange="1" Value="{Binding Layout.Right}" />
+                                    <ui:NumberBox x:Name="LayoutRightBox" Minimum="0" Maximum="300" MaxDecimalPlaces="0" SmallChange="1" Value="{Binding Layout.Right, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                 </StackPanel>
                                 <StackPanel>
                                     <TextBlock Text="Снизу" Style="{StaticResource RowHint}" />
-                                    <ui:NumberBox Minimum="0" Maximum="300" MaxDecimalPlaces="0" SmallChange="1" Value="{Binding Layout.Bottom}" />
+                                    <ui:NumberBox x:Name="LayoutBottomBox" Minimum="0" Maximum="300" MaxDecimalPlaces="0" SmallChange="1" Value="{Binding Layout.Bottom, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                                 </StackPanel>
                             </UniformGrid>
                         </ui:CardControl>
@@ -583,7 +640,7 @@
                                 <ComboBox x:Name="StartBox" MinWidth="170" DisplayMemberPath="Name" SelectedValuePath="Value" SelectedValue="{Binding Layout.Start}" />
                                 <ComboBox x:Name="DirectionBox" MinWidth="170" Margin="8,0,0,0" DisplayMemberPath="Name" SelectedValuePath="Value" SelectedValue="{Binding Layout.Clockwise}" />
                                 <TextBlock Text="Сдвиг:" VerticalAlignment="Center" Margin="14,0,6,0" />
-                                <ui:NumberBox Width="120" Minimum="-500" Maximum="500" MaxDecimalPlaces="0" SmallChange="1" Value="{Binding Layout.Offset}" />
+                                <ui:NumberBox Width="120" Minimum="-500" Maximum="500" MaxDecimalPlaces="0" SmallChange="1" Value="{Binding Layout.Offset, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                             </StackPanel>
                         </ui:CardControl>
                         <StackPanel Orientation="Horizontal" Margin="0,6,0,0">

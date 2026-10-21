@@ -7,7 +7,7 @@ namespace GlowSync.Platform;
 internal static class Autostart
 {
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string ValueName = "GlowSync";
+    private const string ValueName = "GlowSyncNext";
     public const string Argument = "--autostart";
 
     public static bool IsEnabled()

@@ -23,12 +23,6 @@ internal sealed record PortItem(string Name, string Label);
 
 public partial class MainWindow : FluentWindow
 {
-    private static readonly string[] LayoutProperties =
-    {
-        nameof(LayoutConfig.Left), nameof(LayoutConfig.Top), nameof(LayoutConfig.Right), nameof(LayoutConfig.Bottom),
-        nameof(LayoutConfig.Start), nameof(LayoutConfig.Clockwise), nameof(LayoutConfig.Offset),
-    };
-
     private readonly AppController _app;
     private readonly DispatcherTimer _timer;
     private byte[] _previewBuffer = Array.Empty<byte>();
@@ -58,6 +52,19 @@ public partial class MainWindow : FluentWindow
         {
             new Option<DeviceProtocol>(DeviceProtocol.Skydimo, "Skydimo"),
             new Option<DeviceProtocol>(DeviceProtocol.Adalight, "Adalight"),
+            new Option<DeviceProtocol>(DeviceProtocol.WledDdp, "WLED / DDP (UDP)"),
+            new Option<DeviceProtocol>(DeviceProtocol.Tpm2Net, "TPM2.NET (UDP)"),
+            new Option<DeviceProtocol>(DeviceProtocol.OpcTcp, "OPC (TCP)"),
+        };
+        ChannelOrderBox.ItemsSource = Enum.GetValues<ChannelOrder>();
+        ProfileSelectionBox.ItemsSource = new[]
+        {
+            new Option<ProfileSelection>(ProfileSelection.Auto, "Полуавтоматика (по правилам)"),
+            new Option<ProfileSelection>(ProfileSelection.Custom, "Вручную (главная)"),
+            new Option<ProfileSelection>(ProfileSelection.Desktop, "Обычная подсветка"),
+            new Option<ProfileSelection>(ProfileSelection.Game, "Игра"),
+            new Option<ProfileSelection>(ProfileSelection.Video, "Кино"),
+            new Option<ProfileSelection>(ProfileSelection.Music, "Музыка"),
         };
         BaudBox.ItemsSource = new[] { 115200, 230400, 460800, 500000, 921600, 1000000, 2000000 };
         StartBox.ItemsSource = new[]
@@ -72,7 +79,7 @@ public partial class MainWindow : FluentWindow
             new Option<bool>(true, "По часовой стрелке"),
             new Option<bool>(false, "Против часовой"),
         };
-        AboutText.Text = $"GlowSync {typeof(MainWindow).Assembly.GetName().Version?.ToString(3)}";
+        AboutText.Text = $"GlowSync Next {typeof(MainWindow).Assembly.GetName().Version?.ToString(3)}";
 
         BindConfig();
         LoadMonitors();
@@ -104,14 +111,25 @@ public partial class MainWindow : FluentWindow
     {
         var cfg = _app.Store.Config;
         DataContext = cfg;
+        // CardControl header content does not reliably inherit the window DataContext.
+        BreathingChangeColorBox.SetBinding(CheckBox.IsCheckedProperty, new System.Windows.Data.Binding(nameof(EffectsConfig.BreathingRainbow))
+        {
+            Source = cfg.Effects,
+            Mode = System.Windows.Data.BindingMode.TwoWay,
+            UpdateSourceTrigger = System.Windows.Data.UpdateSourceTrigger.PropertyChanged,
+        });
         BuildHotkeys(cfg);
+        BuildProfiles(cfg);
+        BuildOutputs(cfg);
+        BuildDiagnostics();
         UpdateLayoutInfo();
+        UpdateStatus();
     }
 
     private void Nav_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (Nav.SelectedItem is not ListBoxItem { Tag: string page }) return;
-        foreach (var name in new[] { "PageHome", "PageScreen", "PageEffects", "PageColor", "PageStrip", "PageSettings" })
+        foreach (var name in new[] { "PageHome", "PageProfiles", "PageScreen", "PageEffects", "PageColor", "PageStrip", "PageOutputs", "PageDiagnostics", "PageSettings" })
         {
             if (FindName(name) is ScrollViewer sv) sv.Visibility = name == page ? Visibility.Visible : Visibility.Collapsed;
         }
@@ -126,6 +144,7 @@ public partial class MainWindow : FluentWindow
     private void Tick()
     {
         if (WindowState == WindowState.Minimized) return;
+        if (PageDiagnostics.Visibility == Visibility.Visible) { UpdateDiagnostics(); return; }
         if (PageSettings.Visibility == Visibility.Visible)
         {
             UpdateDdcState();
@@ -134,7 +153,7 @@ public partial class MainWindow : FluentWindow
         if (PageHome.Visibility != Visibility.Visible) return;
         int n = _app.Engine.CopyPreview(ref _previewBuffer);
         Preview.SetColors(_previewBuffer, n);
-        FpsText.Text = _app.Engine.IsActive && _app.Engine.Fps > 0 ? $"{_app.Engine.Fps:0} к/с" : "";
+        FpsText.Text = _app.Engine.IsActive && _app.Engine.Fps > 0 ? $"{_app.Engine.Fps:0} к/с · лимит {_app.Engine.TargetFps:0.#}" : "";
     }
 
     private void OnConfigChanged(object sender, string property)
@@ -146,10 +165,9 @@ public partial class MainWindow : FluentWindow
         }
         if (sender is LayoutConfig layout)
         {
-            if (LayoutProperties.Contains(property)) LayoutBuilder.Apply(layout);
             UpdateLayoutInfo();
         }
-        else if (sender is AppConfig || sender is BehaviorConfig)
+        else if (sender is AppConfig || sender is BehaviorConfig || sender is ProfilesConfig)
         {
             UpdateStatus();
         }
@@ -159,6 +177,27 @@ public partial class MainWindow : FluentWindow
     {
         var status = _app.Device.Status;
         var cfg = _app.Store.Config;
+        ProfileStatusText.Text = _app.Profiles.Status;
+        AutoProfileStatusText.Text = _app.Profiles.Status;
+        if (_rulesModeButton != null) _rulesModeButton.Content = cfg.Profiles.Selection == ProfileSelection.Auto
+            ? "Полуавтоматика включена · выключить (вручную)" : "Включить полуавтоматику по правилам";
+        object brightnessSource = _app.Engine.ActiveProfile ?? (object)cfg;
+        MainBrightnessSlider.SetBinding(System.Windows.Controls.Primitives.RangeBase.ValueProperty,
+            new System.Windows.Data.Binding("Brightness") { Source = brightnessSource, Mode = System.Windows.Data.BindingMode.TwoWay });
+        MainBrightnessValue.SetBinding(System.Windows.Controls.TextBlock.TextProperty,
+            new System.Windows.Data.Binding("Brightness") { Source = brightnessSource, StringFormat = "{0}%" });
+        // Both editors must update the exact same object the engine reads.
+        var activeProfile = _app.Engine.ActiveProfile;
+        ScreenTuningPanel.DataContext = new { Screen = activeProfile?.Screen ?? cfg.Screen };
+        ScreenScopeHint.Text = activeProfile == null
+            ? "Редактируются ручные настройки. Монитор, HDR, баланс белого и ночной режим — общие."
+            : $"Редактируется активный профиль: {_app.Profiles.Status}. Эти же значения находятся во вкладке «Профили». Монитор, HDR, баланс белого и ночной режим — общие.";
+        StaticColorPicker.SetBinding(ColorPicker.HexProperty, new System.Windows.Data.Binding("StaticColor")
+        {
+            Source = activeProfile ?? (object)cfg.Effects,
+            Mode = System.Windows.Data.BindingMode.TwoWay,
+            UpdateSourceTrigger = System.Windows.Data.UpdateSourceTrigger.PropertyChanged,
+        });
         string output = !cfg.Enabled ? "выключена"
             : _app.Engine.DisplayOff && cfg.Behavior.OffWhenDisplayOff ? "монитор выключен — лента погашена"
             : "работает";
@@ -280,6 +319,8 @@ public partial class MainWindow : FluentWindow
     }
 
     private void TestSides_Click(object sender, RoutedEventArgs e) => _app.Engine.StartTest(TestPattern.Sides, 15);
+    private void ManualMode_Click(object sender, System.Windows.Input.MouseButtonEventArgs e) =>
+        _app.Store.Config.Profiles.Selection = ProfileSelection.Custom;
 
     private void TestWhite_Click(object sender, RoutedEventArgs e) => _app.Engine.StartTest(TestPattern.White, 15);
 

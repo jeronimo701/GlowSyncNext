@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace GlowSync.Config;
@@ -10,7 +11,8 @@ public enum MusicStyle { Spectrum, Pulse, Meter }
 
 public enum StartCorner { BottomLeft, TopLeft, TopRight, BottomRight }
 
-public enum DeviceProtocol { Skydimo, Adalight }
+public enum DeviceProtocol { Skydimo, Adalight, WledDdp, Tpm2Net, OpcTcp }
+public enum ChannelOrder { RGB, RBG, GRB, GBR, BRG, BGR }
 
 public enum HotkeyAction { Toggle, BrightnessUp, BrightnessDown, NextMode, PrevMode }
 
@@ -34,7 +36,7 @@ public sealed partial class AppConfig : ObservableObject
     [ObservableProperty] private EffectMode _mode = EffectMode.Screen;
     [ObservableProperty] private int _brightness = 100;
 
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 3;
     public string? ImportedFrom { get; set; }
 
     public DeviceConfig Device { get; set; } = new();
@@ -44,6 +46,8 @@ public sealed partial class AppConfig : ObservableObject
     public EffectsConfig Effects { get; set; } = new();
     public BehaviorConfig Behavior { get; set; } = new();
     public NightConfig Night { get; set; } = new();
+    public ProfilesConfig Profiles { get; set; } = new();
+    public ObservableCollection<DeviceConfig> Outputs { get; set; } = new();
     public List<HotkeyBinding> Hotkeys { get; set; } = HotkeyBinding.CreateDefaults();
 
     /// <summary>Fixes values that are missing or out of range after loading a (possibly hand-edited) file.</summary>
@@ -56,11 +60,21 @@ public sealed partial class AppConfig : ObservableObject
         Effects ??= new EffectsConfig();
         Behavior ??= new BehaviorConfig();
         Night ??= new NightConfig();
+        Profiles ??= new();
+        Profiles.Normalize();
+        Outputs ??= new();
+        for (int i = Outputs.Count - 1; i >= 0; i--) if (Outputs[i] == null || i >= 8) Outputs.RemoveAt(i);
+        foreach (var output in Outputs) NormalizeDevice(output);
 
         Brightness = Math.Clamp(Brightness, 0, 100);
         if (!Enum.IsDefined(Mode)) Mode = EffectMode.Screen;
 
         Device.LedCount = Math.Clamp(Device.LedCount, 1, 1000);
+        Device.UdpPort = Math.Clamp(Device.UdpPort, 1, 65535);
+        Device.OpcChannel = Math.Clamp(Device.OpcChannel, 0, 255);
+        NormalizeDevice(Device);
+        if (!Enum.IsDefined(Device.Protocol)) Device.Protocol = DeviceProtocol.Skydimo;
+        if (!Enum.IsDefined(Device.ChannelOrder)) Device.ChannelOrder = ChannelOrder.RGB;
         Device.BaudRate = Device.BaudRate <= 0 ? 115200 : Device.BaudRate;
         if (string.IsNullOrWhiteSpace(Device.Port)) Device.Port = DeviceConfig.AutoPort;
 
@@ -71,6 +85,8 @@ public sealed partial class AppConfig : ObservableObject
         Screen.Depth = Math.Clamp(Screen.Depth, 0.5, 6.0);
         Screen.SpatialBlur = Math.Clamp(Screen.SpatialBlur, 0, 100);
         Screen.BlackThreshold = Math.Clamp(Screen.BlackThreshold, 0, 30);
+        Screen.HdrPaperWhite = Math.Clamp(Screen.HdrPaperWhite, 80, 500);
+        Screen.HdrPeak = Math.Clamp(Screen.HdrPeak, Screen.HdrPaperWhite, 10000);
 
         Color.RedGain = Math.Clamp(Color.RedGain, 0, 100);
         Color.GreenGain = Math.Clamp(Color.GreenGain, 0, 100);
@@ -87,6 +103,19 @@ public sealed partial class AppConfig : ObservableObject
 
         Layout.Normalize();
     }
+
+    private static void NormalizeDevice(DeviceConfig device)
+    {
+        device.LedCount = Math.Clamp(device.LedCount, 1, 1000);
+        device.StartLed = Math.Clamp(device.StartLed, 0, 1000);
+        device.UdpPort = Math.Clamp(device.UdpPort, 1, 65535);
+        device.OpcChannel = Math.Clamp(device.OpcChannel, 0, 255);
+        device.BaudRate = device.BaudRate <= 0 ? 115200 : device.BaudRate;
+        if (!Enum.IsDefined(device.Protocol)) device.Protocol = DeviceProtocol.Skydimo;
+        if (!Enum.IsDefined(device.ChannelOrder)) device.ChannelOrder = ChannelOrder.RGB;
+        if (string.IsNullOrWhiteSpace(device.Port)) device.Port = DeviceConfig.AutoPort;
+        device.Host ??= "";
+    }
 }
 
 public sealed partial class DeviceConfig : ObservableObject
@@ -96,6 +125,13 @@ public sealed partial class DeviceConfig : ObservableObject
     [ObservableProperty] private string _port = AutoPort;
     [ObservableProperty] private DeviceProtocol _protocol = DeviceProtocol.Skydimo;
     [ObservableProperty] private int _baudRate = 115200;
+    [ObservableProperty] private string _host = "192.168.1.50";
+    [ObservableProperty] private int _udpPort = 4048;
+    [ObservableProperty] private ChannelOrder _channelOrder = ChannelOrder.RGB;
+    [ObservableProperty] private int _opcChannel;
+    [ObservableProperty] private string _name = "Устройство";
+    [ObservableProperty] private bool _outputEnabled = true;
+    [ObservableProperty] private int _startLed;
 
     /// <summary>LED count used when the device does not report its model (plain Adalight).</summary>
     [ObservableProperty] private int _ledCount = 65;
@@ -107,6 +143,7 @@ public sealed partial class DeviceConfig : ObservableObject
 
 public sealed partial class LayoutConfig : ObservableObject
 {
+    [ObservableProperty] private bool _useCustomMap;
     [ObservableProperty] private int _left = 17;
     [ObservableProperty] private int _top = 31;
     [ObservableProperty] private int _right = 17;
@@ -129,15 +166,20 @@ public sealed partial class LayoutConfig : ObservableObject
         Right = Math.Clamp(Right, 0, 300);
         Bottom = Math.Clamp(Bottom, 0, 300);
         Leds ??= new List<LedPoint>();
-        if (Leds.Count == 0 || GridWidth < 1 || GridHeight < 1)
-        {
-            Core.LayoutBuilder.Apply(this);
-        }
+        if (UseCustomMap && CustomMapIsValid()) return;
+        UseCustomMap = false;
+        // Side counts are authoritative, including after manual config edits.
+        Core.LayoutBuilder.Apply(this);
     }
+    public bool CustomMapIsValid() => GridWidth is >= 1 and <= 1000 && GridHeight is >= 1 and <= 1000 && Leds is { Count: >= 1 and <= 1000 } &&
+        Leds.TrueForAll(p => p != null && p.X >= 0 && p.Y >= 0 && p.X < GridWidth && p.Y < GridHeight);
 }
 
 public sealed partial class ScreenConfig : ObservableObject
 {
+    [ObservableProperty] private bool _hdrToneMapping;
+    [ObservableProperty] private double _hdrPaperWhite = 203;
+    [ObservableProperty] private double _hdrPeak = 1000;
     /// <summary>DXGI device name like \\.\DISPLAY1; empty = primary monitor.</summary>
     [ObservableProperty] private string _monitor = "";
     [ObservableProperty] private int _fps = 30;
@@ -187,7 +229,7 @@ public sealed partial class EffectsConfig : ObservableObject
 
 public sealed partial class BehaviorConfig : ObservableObject
 {
-    [ObservableProperty] private bool _autostart = true;
+    [ObservableProperty] private bool _autostart;
     [ObservableProperty] private bool _offWhenDisplayOff = true;
     [ObservableProperty] private bool _offWhenLocked;
 

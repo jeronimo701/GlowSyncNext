@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading;
 using GlowSync.Config;
 using GlowSync.Platform;
+using GlowSync.Core;
 
 namespace GlowSync.Device;
 
@@ -31,13 +32,14 @@ internal sealed class DeviceManager : IDisposable
 {
     private static readonly byte[] Handshake = Encoding.ASCII.GetBytes("Moni-A");
 
-    private readonly ConfigStore _store;
+    private readonly Func<DeviceConfig> _getConfig;
     private readonly Thread _thread;
     private readonly AutoResetEvent _wake = new(false);
+    private readonly FrameTimer _pacer;
     private readonly object _frameLock = new();
     private readonly object _portLock = new();
 
-    private NativeSerialPort? _port;
+    private IFrameTransport? _port;
     private string _connectedKey = "";
     private byte[] _pending = new byte[65 * 3];
     private bool _pendingDirty;
@@ -49,15 +51,31 @@ internal sealed class DeviceManager : IDisposable
     private long _nextAttemptTicks;
     private int _failedAttempts;
     private long _lastWriteTicks;
+    private long _nextWriteAt;
+    private long _sendPeriodTicks;
+    private DeviceProtocol _connectedProtocol;
+    private ChannelOrder _connectedChannelOrder;
+    private int _connectedBaud;
+    private int _connectedOpcChannel;
+    private int _disposeCalled;
+    private long _submittedAt, _overwritten, _writeErrors, _connections;
+    public FrameMetric Sending { get; } = new();
+    public double LastQueueMs { get; private set; }
+    public double EstimatedWireMs => FrameEncoding.IsNetwork(_connectedProtocol) || _connectedBaud <= 0 ? 0 : _packetLength * 10_000.0 / _connectedBaud;
+    public long OverwrittenFrames => Interlocked.Read(ref _overwritten);
+    public long WriteErrors => Interlocked.Read(ref _writeErrors);
+    public long Connections => Interlocked.Read(ref _connections);
+    public string LastError { get; private set; } = "";
 
     public DeviceStatus Status { get; private set; } = new(DeviceState.Searching);
 
     /// <summary>Raised from the device thread.</summary>
     public event Action<DeviceStatus>? StatusChanged;
 
-    public DeviceManager(ConfigStore store)
+    public DeviceManager(ConfigStore store, Func<DeviceConfig>? configSource = null)
     {
-        _store = store;
+        _getConfig = configSource ?? (() => store.Config.Device);
+        _pacer = new FrameTimer(_wake);
         _thread = new Thread(Run) { IsBackground = true, Name = "GlowSync.Device" };
     }
 
@@ -71,6 +89,8 @@ internal sealed class DeviceManager : IDisposable
     {
         lock (_frameLock)
         {
+            if (_pendingDirty) Interlocked.Increment(ref _overwritten);
+            _submittedAt = Stopwatch.GetTimestamp();
             if (_pending.Length != rgb.Length) _pending = new byte[rgb.Length];
             rgb.CopyTo(_pending);
             _pendingDirty = true;
@@ -94,7 +114,7 @@ internal sealed class DeviceManager : IDisposable
             try
             {
                 byte[] packet = Array.Empty<byte>();
-                int length = BuildPacket(_store.Config.Device.Protocol, Math.Max(1, Status.LedCount), ReadOnlySpan<byte>.Empty, ref packet);
+                int length = FrameEncoding.Build(_connectedProtocol, _connectedChannelOrder, Math.Max(1, Status.LedCount), ReadOnlySpan<byte>.Empty, ref packet, _connectedOpcChannel);
                 for (int i = 0; i < 2; i++) _port.Write(packet.AsSpan(0, length));
             }
             catch
@@ -145,7 +165,7 @@ internal sealed class DeviceManager : IDisposable
             return;
         }
 
-        var cfg = _store.Config.Device;
+        var cfg = _getConfig();
         if (_port != null && ConfigKey(cfg) != _connectedKey)
         {
             Disconnect("settings changed", DeviceState.Searching);
@@ -174,15 +194,28 @@ internal sealed class DeviceManager : IDisposable
         }
 
         _wake.WaitOne(1000);
+        // Pace before taking the newest pending frame, so a UART never accumulates stale frames.
+        double frameMs = 1000.0 / FrameEncoding.LimitFps(60, _connectedProtocol, _connectedBaud, Math.Max(1, Status.LedCount));
+        long periodTicks = (long)(frameMs * Stopwatch.Frequency / 1000.0);
+        if (_sendPeriodTicks != periodTicks) { _sendPeriodTicks = periodTicks; _nextWriteAt = 0; }
+        double remaining;
+        // Start-to-start cadence: blocking write time is already part of the frame period.
+        // High-resolution waits avoid rounding 16.67 ms to 17+ ms on every frame.
+        while (!_stop && !_suspended && ConfigKey(cfg) == _connectedKey &&
+               _nextWriteAt != 0 && (remaining = (_nextWriteAt - Stopwatch.GetTimestamp()) * 1000.0 / Stopwatch.Frequency) > 0.01)
+            _pacer.Sleep(remaining / 1000.0);
+        if (_stop || _suspended || ConfigKey(cfg) != _connectedKey) return;
 
         bool send;
+        long queuedAt = 0;
         lock (_frameLock)
         {
             send = _pendingDirty;
             if (send)
             {
+                queuedAt = _submittedAt;
                 int leds = Status.LedCount > 0 ? Status.LedCount : _pending.Length / 3;
-                _packetLength = BuildPacket(_store.Config.Device.Protocol, leds, _pending, ref _packet);
+                _packetLength = FrameEncoding.Build(_connectedProtocol, _connectedChannelOrder, leds, _pending, ref _packet, _connectedOpcChannel);
                 _pendingDirty = false;
             }
         }
@@ -195,11 +228,24 @@ internal sealed class DeviceManager : IDisposable
             if (_port == null) return;
             try
             {
+                long writeStart = Stopwatch.GetTimestamp();
+                LastQueueMs = queuedAt == 0 ? 0 : FrameMetric.ElapsedMs(queuedAt);
                 _port.Write(_packet.AsSpan(0, _packetLength));
+                // Advance the scheduled deadline, not the overslept actual start.
+                // Missed periods are discarded rather than replayed as a burst.
+                _nextWriteAt = Math.Max((_nextWriteAt == 0 ? writeStart : _nextWriteAt) + periodTicks, Stopwatch.GetTimestamp());
+                if (!FrameEncoding.IsNetwork(_connectedProtocol) && _connectedBaud > 0)
+                {
+                    long wireTicks = (long)(_packetLength * 10.0 / _connectedBaud * Stopwatch.Frequency);
+                    _nextWriteAt = Math.Max(_nextWriteAt, writeStart + wireTicks);
+                }
+                Sending.Observe(FrameMetric.ElapsedMs(writeStart));
                 _lastWriteTicks = Environment.TickCount64;
             }
             catch (Exception ex)
             {
+                Interlocked.Increment(ref _writeErrors);
+                LastError = ex.GetType().Name;
                 Log.Warn($"Write to {_port.Name} failed ({ex.Message}); reconnecting");
                 DisconnectLocked(DeviceState.Searching);
                 Volatile.Write(ref _nextAttemptTicks, Environment.TickCount64 + 1000);
@@ -207,35 +253,25 @@ internal sealed class DeviceManager : IDisposable
         }
     }
 
-    private static int BuildPacket(DeviceProtocol protocol, int leds, ReadOnlySpan<byte> rgb, ref byte[] packet)
-    {
-        int size = 6 + leds * 3;
-        if (packet.Length < size) packet = new byte[size];
-        packet[0] = (byte)'A';
-        packet[1] = (byte)'d';
-        packet[2] = (byte)'a';
-        if (protocol == DeviceProtocol.Skydimo)
-        {
-            // Skydimo variant: 0x00, then the LED count (not count-1), no checksum.
-            packet[3] = 0;
-            packet[4] = (byte)(leds >> 8);
-            packet[5] = (byte)leds;
-        }
-        else
-        {
-            int n = leds - 1;
-            packet[3] = (byte)(n >> 8);
-            packet[4] = (byte)n;
-            packet[5] = (byte)(packet[3] ^ packet[4] ^ 0x55);
-        }
-        int copy = Math.Min(rgb.Length, leds * 3);
-        rgb[..copy].CopyTo(packet.AsSpan(6));
-        packet.AsSpan(6 + copy, leds * 3 - copy).Clear();
-        return size;
-    }
-
     private void TryConnect(DeviceConfig cfg)
     {
+        if (FrameEncoding.IsNetwork(cfg.Protocol))
+        {
+            try
+            {
+                IFrameTransport transport = cfg.Protocol == DeviceProtocol.OpcTcp
+                    ? new OpcFrameTransport(cfg.Host, cfg.UdpPort)
+                    : new DdpFrameTransport(cfg.Host, cfg.UdpPort, cfg.Protocol == DeviceProtocol.Tpm2Net);
+                Connected(transport, cfg, new(DeviceState.Connected, transport.Name, cfg.Protocol.ToString(), null, cfg.LedCount));
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("DDP connection: " + ex.Message);
+                LastError = ex.GetType().Name;
+                SetStatus(new(DeviceState.NotFound, cfg.Host));
+            }
+            return;
+        }
         bool auto = string.Equals(cfg.Port, DeviceConfig.AutoPort, StringComparison.OrdinalIgnoreCase);
         string[] candidates;
         if (auto)
@@ -256,6 +292,7 @@ internal sealed class DeviceManager : IDisposable
         string? busyPort = null;
         foreach (var name in candidates)
         {
+            if (_stop || _suspended) return;
             NativeSerialPort port;
             try
             {
@@ -272,13 +309,13 @@ internal sealed class DeviceManager : IDisposable
             {
                 var model = SkydimoModels.Find(hello.Value.Model);
                 int count = model?.LedCount ?? cfg.LedCount;
-                Connected(port, cfg, new DeviceStatus(DeviceState.Connected, name, hello.Value.Model, hello.Value.Serial, count));
+                Connected(new SerialFrameTransport(port), cfg, new DeviceStatus(DeviceState.Connected, name, hello.Value.Model, hello.Value.Serial, count));
                 return;
             }
             if (!auto)
             {
                 // Explicit port: trust the user even if the controller does not answer the Skydimo handshake.
-                Connected(port, cfg, new DeviceStatus(DeviceState.Connected, name, cfg.Protocol == DeviceProtocol.Skydimo ? "Skydimo?" : null, null, cfg.LedCount));
+                Connected(new SerialFrameTransport(port), cfg, new DeviceStatus(DeviceState.Connected, name, cfg.Protocol == DeviceProtocol.Skydimo ? "Skydimo?" : null, null, cfg.LedCount));
                 return;
             }
             port.Dispose();
@@ -292,21 +329,28 @@ internal sealed class DeviceManager : IDisposable
         }
     }
 
-    private void Connected(NativeSerialPort port, DeviceConfig cfg, DeviceStatus status)
+    private void Connected(IFrameTransport port, DeviceConfig cfg, DeviceStatus status)
     {
         lock (_portLock)
         {
+            if (_stop || _suspended) { port.Dispose(); return; }
             _port = port;
             _connectedKey = ConfigKey(cfg);
+            _connectedProtocol = cfg.Protocol;
+            _connectedChannelOrder = cfg.ChannelOrder;
+            _connectedBaud = cfg.BaudRate;
+            _connectedOpcChannel = cfg.OpcChannel;
         }
         _lastWriteTicks = 0;
+        _nextWriteAt = 0;
+        Interlocked.Increment(ref _connections);
         Log.Info($"Device connected: {status.Model} S/N {status.Serial} on {status.Port}, {status.LedCount} LEDs");
         if (!string.Equals(cfg.LastPort, status.Port, StringComparison.OrdinalIgnoreCase)) cfg.LastPort = status.Port;
         SetStatus(status);
         lock (_frameLock) _pendingDirty = true;
     }
 
-    private static (string Model, string? Serial)? TryHandshake(NativeSerialPort port)
+    private (string Model, string? Serial)? TryHandshake(NativeSerialPort port)
     {
         try
         {
@@ -315,7 +359,7 @@ internal sealed class DeviceManager : IDisposable
             int len = 0;
             var sw = Stopwatch.StartNew();
             long lastData = 0;
-            while (sw.ElapsedMilliseconds < 800 && len < buf.Length)
+            while (!_stop && !_suspended && sw.ElapsedMilliseconds < 800 && len < buf.Length)
             {
                 int n = port.Read(buf.AsSpan(len));
                 if (n > 0)
@@ -352,7 +396,7 @@ internal sealed class DeviceManager : IDisposable
         return (model, serial);
     }
 
-    private static string ConfigKey(DeviceConfig cfg) => $"{cfg.Port}|{cfg.Protocol}|{cfg.BaudRate}|{cfg.LedCount}";
+    private static string ConfigKey(DeviceConfig cfg) => $"{cfg.Port}|{cfg.Protocol}|{cfg.BaudRate}|{cfg.LedCount}|{cfg.Host}|{cfg.UdpPort}|{cfg.ChannelOrder}|{cfg.OpcChannel}";
 
     private void Disconnect(string reason, DeviceState state)
     {
@@ -368,6 +412,7 @@ internal sealed class DeviceManager : IDisposable
         _port?.Dispose();
         _port = null;
         _connectedKey = "";
+        _packetLength = 0;
         SetStatus(new DeviceStatus(state));
     }
 
@@ -387,9 +432,11 @@ internal sealed class DeviceManager : IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposeCalled, 1) != 0) return;
         _stop = true;
         _wake.Set();
-        if (_thread.IsAlive) _thread.Join(2000);
+        if (_thread.IsAlive && !_thread.Join(2000)) { Log.Warn("Device thread still stopping; retaining its wake handle"); return; }
+        _pacer.Dispose();
         _wake.Dispose();
     }
 }

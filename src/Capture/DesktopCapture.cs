@@ -32,6 +32,15 @@ internal sealed class DesktopCapture : IDisposable
     private string _monitor = "";
     private long _retryAtTicks;
     private bool _failureLogged;
+    private bool _hdrEnabled;
+    private double _paperWhite = 203, _peak = 1000;
+    private Format _sourceFormat;
+    public bool IsHdrOutput { get; private set; }
+    public void ConfigureHdr(bool enabled, double paperWhite, double peak)
+    {
+        if (_hdrEnabled != enabled) { _hdrEnabled = enabled; Reset(); }
+        _paperWhite = paperWhite; _peak = peak;
+    }
 
     public byte[] Pixels { get; private set; } = Array.Empty<byte>();
     public int Width { get; private set; }
@@ -39,6 +48,7 @@ internal sealed class DesktopCapture : IDisposable
     public ModeRotation Rotation { get; private set; } = ModeRotation.Identity;
     public bool HasFrame { get; private set; }
     public string? CurrentMonitor { get; private set; }
+    public string PixelFormat { get; private set; } = "Нет захвата";
 
     /// <summary>Minimum reduced-image size; chosen so each LED zone still covers many pixels.</summary>
     public int MinWidth { get; set; } = 256;
@@ -169,8 +179,9 @@ internal sealed class DesktopCapture : IDisposable
 
                     using (var output5 = chosenOutput.QueryInterfaceOrNull<IDXGIOutput5>())
                     {
-                        // Lets Windows tone-map HDR desktops down to 8-bit for us.
-                        if (output5 != null) _duplication = DuplicateOutput1(output5, _device);
+                        using var output6 = chosenOutput.QueryInterfaceOrNull<IDXGIOutput6>();
+                        IsHdrOutput = output6?.Description1.ColorSpace == ColorSpaceType.RgbFullG2084NoneP2020;
+                        if (output5 != null) _duplication = DuplicateOutput1(output5, _device, _hdrEnabled && IsHdrOutput);
                     }
                     if (_duplication == null)
                     {
@@ -207,20 +218,22 @@ internal sealed class DesktopCapture : IDisposable
     /// IDXGIOutput5::DuplicateOutput1 called through the vtable (slot 26): the Vortice 3.8 wrapper
     /// for this method corrupts the stack and crashes with an access violation.
     /// </summary>
-    private static unsafe IDXGIOutputDuplication? DuplicateOutput1(IDXGIOutput5 output, ID3D11Device device)
+    private static unsafe IDXGIOutputDuplication? DuplicateOutput1(IDXGIOutput5 output, ID3D11Device device, bool hdr)
     {
         var vtable = *(IntPtr**)output.NativePointer;
         var method = (delegate* unmanaged[Stdcall]<IntPtr, IntPtr, uint, uint, int*, IntPtr*, int>)vtable[26];
-        int format = (int)Format.B8G8R8A8_UNorm;
+        int* formats = stackalloc int[2];
+        formats[0] = (int)(hdr ? Format.R16G16B16A16_Float : Format.B8G8R8A8_UNorm);
+        formats[1] = (int)Format.B8G8R8A8_UNorm;
         IntPtr result = IntPtr.Zero;
-        int hr = method(output.NativePointer, device.NativePointer, 0, 1, &format, &result);
+        int hr = method(output.NativePointer, device.NativePointer, 0, hdr ? 2u : 1u, formats, &result);
         const int DxgiErrorUnsupported = unchecked((int)0x887A0004);
         if (hr == DxgiErrorUnsupported) return null; // old driver: fall back to DuplicateOutput
         new SharpGen.Runtime.Result(hr).CheckError(); // access denied / not available: retried by the caller
         return new IDXGIOutputDuplication(result);
     }
 
-    private CaptureResult Acquire()
+    private unsafe CaptureResult Acquire()
     {
         var result = _duplication!.AcquireNextFrame(0, out var info, out var resource);
         if (result == Vortice.DXGI.ResultCode.WaitTimeout) return CaptureResult.NoChange;
@@ -237,6 +250,7 @@ internal sealed class DesktopCapture : IDisposable
             if (info.LastPresentTime == 0 && HasFrame) return CaptureResult.NoChange; // pointer-only update
 
             using var texture = resource!.QueryInterface<ID3D11Texture2D>();
+            PixelFormat = texture.Description.Format.ToString();
             EnsureTextures(texture.Description);
 
             var ctx = _context!;
@@ -251,7 +265,10 @@ internal sealed class DesktopCapture : IDisposable
                 int pitch = (int)map.RowPitch;
                 for (int y = 0; y < Height; y++)
                 {
-                    Marshal.Copy(map.DataPointer + y * pitch, Pixels, y * stride, stride);
+                    if (texture.Description.Format == Format.R16G16B16A16_Float)
+                        HdrToneMapper.ConvertRow(new ReadOnlySpan<Half>((void*)(map.DataPointer + y * pitch), Width * 4), Pixels.AsSpan(y * stride, stride), _paperWhite, _peak);
+                    else
+                        Marshal.Copy(map.DataPointer + y * pitch, Pixels, y * stride, stride);
                 }
             }
             finally
@@ -271,7 +288,9 @@ internal sealed class DesktopCapture : IDisposable
 
     private void EnsureTextures(Texture2DDescription source)
     {
-        if (_mipTexture != null && source.Width == _sourceWidth && source.Height == _sourceHeight) return;
+        if (_mipTexture != null && source.Width == _sourceWidth && source.Height == _sourceHeight && source.Format == _sourceFormat) return;
+        if (source.Format is not (Format.B8G8R8A8_UNorm or Format.R16G16B16A16_Float)) throw new NotSupportedException("Unexpected capture pixel format: " + source.Format);
+        _sourceFormat = source.Format;
 
         _staging?.Dispose();
         _mipView?.Dispose();
